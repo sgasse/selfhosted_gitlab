@@ -1,0 +1,107 @@
+version: '3.9'
+services:
+  # serve main gitlab instance
+  gitlab-instance:
+    image: gitlab/gitlab-ce:13.7.1-ce.0
+    restart: always
+    hostname: 'gitlab'
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'https://dev.simongasse.de:4000'
+        gitlab_rails['gitlab_shell_ssh_port'] = 4022
+        gitlab_rails['initial_root_password'] = File.read('/var/secrets/gitlab_root_pw.txt')
+        nginx['enable'] = true
+        nginx['redirect_http_to_https'] = true
+        nginx['listen_port'] = 4001
+        nginx['ssl_certificate'] = '/etc/letsencrypt/live/dev.simongasse.de/fullchain.pem'
+        nginx['ssl_certificate_key'] = '/etc/letsencrypt/live/dev.simongasse.de/privkey.pem'
+        letsencrypt['enable'] = false
+        gitlab_rails['registry_enabled'] = true
+        registry_external_url 'https://dev.simongasse.de:5050'
+        registry_nginx['ssl_certificate'] = '/etc/letsencrypt/live/dev.simongasse.de/fullchain.pem'
+        registry_nginx['ssl_certificate_key'] = '/etc/letsencrypt/live/dev.simongasse.de/privkey.pem'
+    ports:
+      - '4000:4001'
+      - '4022:22'
+      - '5050:5050'
+    volumes:
+      - ./config/gitlab/secrets/gitlab_root_pw.txt:/var/secrets/gitlab_root_pw.txt
+      # certificates are sym-linked, cannot use directory below the given one
+      - ./data/certbot/conf:/etc/letsencrypt:ro
+
+  # run CI jobs for gitlab on the same host
+  # should be moved to another host for larger installations
+  ci-runner:
+    image: gitlab/gitlab-runner:alpine-v13.7.0
+    restart: always
+    volumes:
+      - ./data/gitlab-runner/config:/etc/gitlab-runner:Z
+      - /var/runner/docker.sock:/var/run/docker.sock
+    depends_on:
+      - docker-in-docker
+
+  # register CI runner with the gitlab instance
+  register-runner:
+    image: gitlab/gitlab-runner:alpine-v13.7.0
+    restart: 'no'
+    volumes:
+      - ./data/gitlab-runner/config:/etc/gitlab-runner:Z
+    command:
+      - register
+      - --non-interactive
+      - --locked=false
+      - --name=Docker runner
+      - --executor=docker
+      - --docker-image=docker:20.10.1-dind
+      - --docker-volumes=/var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - CI_SERVER_URL=https://dev.simongasse.de:4000/
+      - REGISTRATION_TOKEN=CHANGEME
+
+  # encapsulate CI jobs from host machine
+  docker-in-docker:
+    image: docker:20.10.1-dind
+    restart: always
+    privileged: true
+    volumes:
+      - /var/lib/docker
+    command:
+      - --sotrage-driver=overlay2
+
+  # serve http for certbot and forward SSL to the gitlab instance
+  nginx:
+    image: nginx:1.19.6-alpine
+    depends_on:
+      # ensure docker-internal hostname `gitlab` exists at startup time
+      - gitlab
+    hostname: 'nginx'
+    ports:
+      # answer ACME challenges for certbot
+      - '80:80'
+      # redirect default https to port 4000
+      - '443:443'
+    volumes:
+      # configuration
+      - ./config/nginx:/etc/nginx/conf.d
+      # certificates / SSL options
+      - ./data/certbot/conf:/etc/letsencrypt:ro
+      - ./data/certbot/www:/var/www/certbot
+      - ./config/ssl:/etc/ssl
+      # logs
+      - ./data/nginx/logs:/var/log/nginx
+    # reload certificates every six hours
+    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+
+  # retrieve SSL certificates automatically
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - ./data/certbot/conf:/etc/letsencrypt
+      - ./data/certbot/www:/var/www/certbot
+    # check for renewal of certificates every twelve hours
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+# TODO:
+# - README on certbot
+# - Commenting SSL blocks
+# - storage location of ssl params
