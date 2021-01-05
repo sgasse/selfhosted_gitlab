@@ -2,7 +2,7 @@ version: '3.9'
 services:
   # serve main gitlab instance
   gitlab-instance:
-    image: gitlab/gitlab-ce:13.7.1-ce.0
+    image: gitlab/gitlab-ce:13.6.3-ce.0
     restart: always
     hostname: 'gitlab'
     environment:
@@ -25,6 +25,9 @@ services:
       - '4022:22'
       - '5050:5050'
     volumes:
+      - ./data/gitlab/persistent/data:/var/opt/gitlab
+      - ./data/gitlab/persistent/logs:/var/log/gitlab
+      - ./data/gitlab/persistent/config:/etc/gitlab
       - ./config/gitlab/secrets/gitlab_root_pw.txt:/var/secrets/gitlab_root_pw.txt
       # certificates are sym-linked, cannot use directory below the given one
       - ./data/certbot/conf:/etc/letsencrypt:ro
@@ -32,7 +35,7 @@ services:
   # run CI jobs for gitlab on the same host
   # should be moved to another host for larger installations
   ci-runner:
-    image: gitlab/gitlab-runner:alpine-v13.7.0
+    image: gitlab/gitlab-runner:alpine-v13.6.0
     restart: always
     volumes:
       - ./data/gitlab-runner/config:/etc/gitlab-runner:Z
@@ -42,7 +45,7 @@ services:
 
   # register CI runner with the gitlab instance
   register-runner:
-    image: gitlab/gitlab-runner:alpine-v13.7.0
+    image: gitlab/gitlab-runner:alpine-v13.6.0
     restart: 'no'
     volumes:
       - ./data/gitlab-runner/config:/etc/gitlab-runner:Z
@@ -71,9 +74,6 @@ services:
   # serve http for certbot and forward SSL to the gitlab instance
   nginx:
     image: nginx:1.19.6-alpine
-    depends_on:
-      # ensure docker-internal hostname `gitlab` exists at startup time
-      - gitlab
     hostname: 'nginx'
     ports:
       # answer ACME challenges for certbot
@@ -100,8 +100,3 @@ services:
       - ./data/certbot/www:/var/www/certbot
     # check for renewal of certificates every twelve hours
     entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
-
-# TODO:
-# - README on certbot
-# - Commenting SSL blocks
-# - storage location of ssl params
